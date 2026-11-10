@@ -126,8 +126,44 @@
   .meta-line .clear-link{color:var(--muted); text-decoration:underline dashed; cursor:pointer}
   .meta-line .clear-link:hover{color:var(--brand)}
 
-  #status{padding:30px 4px; text-align:center; color:var(--muted)}
-  #status .err{color:#e11d48}
+  /* ---------- Загрузка: спиннер + анимация ---------- */
+  #status{
+    padding:48px 4px;
+    text-align:center;
+    color:var(--muted);
+    animation:fade-in .25s ease-out;
+  }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  #status .spinner{
+    width:46px; height:46px; border-radius:50%;
+    border:3px solid var(--line);
+    border-top-color:var(--brand);
+    margin:0 auto 16px;
+    animation:spin .85s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status .loading-text{
+    font-size:15px; font-weight:500; color:var(--ink);
+    margin-bottom:6px;
+  }
+  #status .loading-text .dots span{
+    display:inline-block; opacity:0;
+    animation:dot-pulse 1.4s infinite;
+  }
+  #status .loading-text .dots span:nth-child(2){ animation-delay:.2s; }
+  #status .loading-text .dots span:nth-child(3){ animation-delay:.4s; }
+  @keyframes dot-pulse {
+    0%, 60%, 100% { opacity: 0; }
+    30% { opacity: 1; }
+  }
+  #status .substatus{
+    font-size:12px; color:var(--muted);
+    margin-top:4px;
+  }
+  #status .err{color:#e11d48; font-weight:500;}
 
   #results{display:flex; flex-direction:column; gap:12px; padding-bottom:8px}
 
@@ -292,7 +328,14 @@
     <div class="clear-link" id="clear-all" style="display:none" title="Сбросить поиск и фильтры">Очистить</div>
   </div>
 
-  <div id="status">Загрузка данных реестра...</div>
+  <!-- Загрузка: спиннер + анимация -->
+  <div id="status">
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="loading-text">
+      <span id="loading-text">Загрузка реестра лицензий</span><span class="dots"><span>.</span><span>.</span><span>.</span></span>
+    </div>
+    <div class="substatus">Файл ~12 МБ. Обычно 3–8 секунд на мобильном.</div>
+  </div>
 
   <div id="results"></div>
 
@@ -309,6 +352,7 @@
       </div>
       <div>
         <div class="row-label">Первоисточники и текстовые редакции для сверки:</div>
+        <a href="https://rkn.gov.ru/opendata/7705846236-LicComm/" target="_blank" rel="noopener">Набор открытых данных на rkn.gov.ru</a> ·
         <a href="https://rkn.gov.ru/" target="_blank" rel="noopener">Официальный сайт Роскомнадзора</a> ·
         <a href="https://github.com/prog815/licenses-comm" target="_blank" rel="noopener" title="Исходный код и описание справочника">О справочнике</a>
       </div>
@@ -346,6 +390,7 @@
   var META = null;
   var activeDeepLinkCode = null;
   var view = { list: [], shown: 0 };
+  var loadingInterval = null;
 
   var els = {
     q: document.getElementById('q'),
@@ -353,6 +398,7 @@
     clearAll: document.getElementById('clear-all'),
     count: document.getElementById('count'),
     status: document.getElementById('status'),
+    loadingText: document.getElementById('loading-text'),
     results: document.getElementById('results'),
     more: document.getElementById('more'),
     footstats: document.getElementById('footstats'),
@@ -361,6 +407,32 @@
     fabDown: document.getElementById('fabDown'),
     toast: document.getElementById('toast')
   };
+
+  // ---------- Анимация текста загрузки ----------
+  var LOADING_PHASES = [
+    'Загрузка реестра лицензий',
+    'Распаковка данных',
+    'Подготовка справочника'
+  ];
+  var loadingIdx = 0;
+
+  function startLoadingTicker() {
+    stopLoadingTicker();
+    loadingInterval = setInterval(function(){
+      if (!els.loadingText || !els.loadingText.isConnected) {
+        stopLoadingTicker();
+        return;
+      }
+      loadingIdx = (loadingIdx + 1) % LOADING_PHASES.length;
+      els.loadingText.textContent = LOADING_PHASES[loadingIdx];
+    }, 1500);
+  }
+  function stopLoadingTicker() {
+    if (loadingInterval) {
+      clearInterval(loadingInterval);
+      loadingInterval = null;
+    }
+  }
 
   function esc(s){
     return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
@@ -418,6 +490,8 @@
 
   async function boot(){
     try{
+      startLoadingTicker();
+
       var base = location.pathname.replace(/index\.html$/, '');
       if(base.charAt(base.length - 1) !== '/') base += '/';
 
@@ -474,17 +548,20 @@
         }
       }
 
+      stopLoadingTicker();
       els.status.style.display = 'none';
 
+      // Deep link ?code=LIC...
       var urlParams = new URLSearchParams(window.location.search);
       var codeParam = urlParams.get('code');
       if (codeParam) {
-        activeDeepLinkCode = codeParam;
         var found = DATA.find(function(r) { return r.id === codeParam; });
         if (found) {
+          activeDeepLinkCode = codeParam;
           els.filterStatus.value = '';
-          els.q.value = found.name;
+          // НЕ подставляем имя в поиск — иначе вернутся все организации с этим наименованием
         } else {
+          // Не нашли — fallback: поиск по строке (может, пользователь вставил ID вручную)
           els.q.value = codeParam;
         }
       }
@@ -492,18 +569,33 @@
       runSearch();
     }catch(err){
       console.error(err);
+      stopLoadingTicker();
       els.status.innerHTML = '<div class="err">Ошибка загрузки: ' + esc(err.message) + '</div>' +
-        '<div style="margin-top:12px"><button class="btn" onclick="location.reload()">Повторить</button></div>';
+        '<div style="margin-top:12px"><button class="action-btn" onclick="location.reload()">Повторить</button></div>';
     }
   }
 
   function runSearch(){
+    // ---------- Режим deep-link: показываем ровно одну карточку ----------
+    if (activeDeepLinkCode) {
+      var one = DATA.find(function(r){ return r.id === activeDeepLinkCode; });
+      view.list = one ? [one] : [];
+      view.shown = 0;
+      els.results.innerHTML = '';
+      renderCount();
+      renderMore();
+      appendPage();
+      updateClearVisibility();
+      return;
+    }
+
+    // ---------- Обычный поиск ----------
     var query = normName(els.q.value);
     var tokens = query.split(' ').filter(Boolean);
     var selStatus = els.filterStatus.value;
 
     view.list = DATA.filter(function(r){
-      // 1. Текстовый поиск (строго по всем текстовым полям)
+      // 1. Текстовый поиск (AND по токенам, по всем текстовым полям)
       if (tokens.length > 0) {
         var blob = normName(
           r.id + ' ' +
@@ -562,7 +654,11 @@
   function appendPage(){
     var total = view.list.length;
     if(total === 0){
-      els.results.innerHTML = '<div style="padding:32px 4px;text-align:center;color:var(--muted)">Ничего не найдено. Попробуйте изменить запрос или сбросить фильтры.</div>';
+      if (activeDeepLinkCode) {
+        els.results.innerHTML = '<div style="padding:32px 4px;text-align:center;color:var(--muted)">Карточка по ссылке не найдена. Возможно, запись удалена из реестра.<br><br>Нажмите «Очистить», чтобы увидеть весь реестр.</div>';
+      } else {
+        els.results.innerHTML = '<div style="padding:32px 4px;text-align:center;color:var(--muted)">Ничего не найдено. Попробуйте изменить запрос или сбросить фильтры.</div>';
+      }
       renderCount(); renderMore(); return;
     }
 
